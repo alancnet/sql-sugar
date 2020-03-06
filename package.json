@@ -1,9 +1,10 @@
 {
   "name": "sql-sugar",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "main": "index.js",
   "license": "MIT",
   "dependencies": {
+    "lodash": "^4.17.15",
     "mssql": "^6.1.0",
     "nest-literal": "^1.0.4"
   }

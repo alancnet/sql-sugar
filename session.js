@@ -4,9 +4,15 @@ const { nest } = require('nest-literal')
 const { sqlifyTemplate, trimParameters } = require('./util')
 const Table = require('./table')
 
+const restack = (stack1, stack2) => [
+  ...stack1.split('\n').filter(x => !x.startsWith('    at ')),
+  ...stack2.split('\n').slice(2).filter(x => !x.includes('sql-sugar'))
+].join('\n')
+
 class Session extends EventEmitter {
   constructor(config) {
     super()
+    const stack = new Error().stack
     if (!config.transaction) {
       this.pools = Promise.resolve(config).then(config => {
         this.configs = config.database.split(',').map(database => ({ ...config, database }))
@@ -15,7 +21,10 @@ class Session extends EventEmitter {
           pool.catch(err => {
             this.emit('error', err)
           })
-          return pool
+          return pool.catch(err => {
+            err.stack = restack(err.stack, stack)
+            throw err
+          })
         }))
       })
       this.pool = this.pools.then(pools => pools.slice().pop())
@@ -26,6 +35,7 @@ class Session extends EventEmitter {
     for (const fn of ['sql', 'request', 'transaction', 'close']) {
       this[fn] = this[fn].bind(this)
     }
+    this.class = this.table // Alias
   }
   
   async request() {
@@ -38,17 +48,25 @@ class Session extends EventEmitter {
     const template = nest(callSite, ...substitutions)
     
     template.then = (resolve, reject) => (async () => {
+      const stack = new Error().stack
       const request = await this.request()
       const trimmedTemplate = trimParameters(template)
-      this.emit('sql-template', trimmedTemplate)
-      return request.query(...trimmedTemplate)
+      this.emit('sql-template', template)
+      try {
+        return await request.query(...trimmedTemplate)
+      } catch (err) {
+        err.stack = restack(err.stack, stack)
+        err.sql = template.toString()
+        err.template = template
+        throw err
+      }
     })().then(resolve, reject)
     
     template.toString = function() {
-      return sqlifyTemplate(...this)
+      return sqlifyTemplate(this)
     }
 
-    template.recordset = () => template.then(result => result.recordset)
+    template.recordset = () => template.then(result => result.recordset || null)
     template.one = () => template.then(result => result.recordset[0] || null)
     
     return template

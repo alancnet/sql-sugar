@@ -1,4 +1,5 @@
 const { nest, raw, join } = require('nest-literal')
+const isEqual = require('lodash/isEqual')
 
 const escapeField = field => raw(`[${field}]`)
 
@@ -10,7 +11,7 @@ const sqlify = value => raw(
 )
 
 const sqlifyTemplate = (template) => {
-  return nest(template.callSite, template.substitutions.map(sqlify)).toString()
+  return nest(template.callSite, ...template.substitutions.map(sqlify)).toString()
 }
 
 const trimParameters = (template) => {
@@ -24,7 +25,7 @@ const trimParameters = (template) => {
 
 const parens = (arr, delim) => {
   if (arr.length === 1) return arr[0]
-  return `(${arr.reduce(join(delim))})`
+  return nest`(${arr.reduce(join.with(delim))})`
 }
 const ops = {
   $eq: (f, v) => nest`[${raw(f)}] = ${v}`,
@@ -63,8 +64,15 @@ const objectCriteria = (obj, parameters = new Map()) => {
   }
 }
 
+const whatChanged = (record, data) => {
+  const changed = Object.entries(data).filter(([key, value]) => !isEqual(value, record[key]))
+  if (changed.length) return Object.fromEntries(changed)
+  else return null
+}
+
+
 module.exports = {
   sqlify, sqlifyTemplate,
   trimParameters, objectCriteria,
-  escapeField
+  escapeField, whatChanged
 }

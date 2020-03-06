@@ -12,10 +12,10 @@ class Table {
     this.session = session
     this.type = null
     this.properties = new Map()
-    this.jsonField = options.jsonField || 'json'
+    this.jsonField = options.jsonField || null
     this.idField = options.idField || 'id'
     this.jsonReadOnly = this.options.jsonReadOnly
-    this._decodeObject = this._decodeObject.bind(this)
+    this.decode = this.decode.bind(this)
   }
 
   log(...args) {
@@ -50,10 +50,12 @@ class Table {
   _getPresentFields(record) {
     return Array.from(this.properties.keys()).filter(key => record.hasOwnProperty(key))
   }
-  _decodeObject(record) {
+  decode(record) {
     const obj = {
-      [this.idField]: null,
-      ...JSON.parse(record[this.jsonField])
+      [this.idField]: null
+    }
+    if (this.jsonField) {
+      Object.assign(obj, JSON.parse(record[this.jsonField]))
     }
     obj[this.idField] = record[this.idField]
     for (const [key, {decode}] of this.properties.entries()) {
@@ -73,20 +75,24 @@ class Table {
     const sql = this.session.sql
     const presentFields = this._getPresentFields(record)
 
-    const fields = [
-      ...presentFields,
-      this.jsonField
-    ]
-    const values = [
-      ...presentFields.map(field => this.properties.get(field).encode(record[field])),
-      JSON.stringify(record)
-    ]
-    return this._decodeObject(await sql`
+    const fields = [...presentFields]
+    const values = presentFields.map(field => this.properties.get(field).encode(record[field]))
+    if (this.jsonField) {
+      fields.push(this.jsonField)
+      values.push(JSON.stringify(record))
+    }
+    const result = await sql`
       insert into ${escapeField(this.name)}
       (${raw(fields.map(escapeField).join(', '))})
-      output inserted.*
+      output inserted.${escapeField(this.idField)}
       values (${values})
-    `.one())
+    `.one()
+    if (!result) throw new Error('Unable to insert row. Nothing returned.')
+    return {
+      [this.idField]: null,
+      ...record,
+      [this.idField]: result[this.idField]
+    }
   }
 
   /**
@@ -99,8 +105,8 @@ class Table {
     if (typeof query === 'object') return (await sql`
       select * from ${escapeField(this.name)}
       where ${objectCriteria(query, this.properties)}
-    `.recordset()).map(this._decodeObject)
-    return this._decodeObject(await sql`
+    `.recordset()).map(this.decode)
+    return this.decode(await sql`
       select * from ${escapeField(this.name)} where ${escapeField(this.idField)} = ${query}
     `.one())
   }
@@ -113,22 +119,30 @@ class Table {
   async update(record, data) {
     if (!data || !Object.values(data).filter(x => x !== undefined).length) throw new Error('Update requires changes')
     const sql = this.session.sql
-    const fields = this._getPresentFields(record)
-    const values = fields.map(field => this.properties.get(field).encode(record[field]))
-    if (this.jsonReadOnly) {
+    const fields = this._getPresentFields(data)
+    const values = fields.map(field => this.properties.get(field).encode(data[field]))
+    if (!this.jsonField || this.jsonReadOnly) {
       const extraFields = Object.keys(data).filter(field => !this.properties.has(field))
       if (extraFields.length) throw new Error(`Cannot update anonymous fields (${extraFields.join(', ')}) when jsonReadOnly is true.`)
     } else {
       fields.push(this.jsonField)
-      values.push(JSON.stringify(record))
+      values.push(JSON.stringify({
+        ...record,
+        ...data
+      }))
     }
 
-    return this._decodeObject(await sql`
+    const result = await sql`
       update ${escapeField(this.name)}
       set ${fields.map((field, i) => sql`${escapeField(field)} = ${values[i]}`).reduce(join.with(', '))}
-      output inserted.*
-      where ${escapeField(this.idField)} = ${record[this.idField]}
-    `.one())
+      where ${escapeField(this.idField)} = ${record[this.idField]};
+      select @@rowcount as count
+    `.one()
+    if (result.count !== 1) throw new Error(`Unable to update record ${record[this.idField]}. No rows were updated.`)
+    return {
+      ...record,
+      ...data
+    }
   }
 
   /**
